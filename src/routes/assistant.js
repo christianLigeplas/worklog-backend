@@ -50,7 +50,7 @@ export default async function assistantRoutes(app) {
     return { ok: true };
   });
 
-  // Procesar mensaje y crear tarea
+  // Procesar mensaje del chat (crear tarea)
   app.post('/message', async (req, reply) => {
     const { text } = req.body || {};
     if (!text?.trim()) return reply.code(400).send({ error: 'empty_text' });
@@ -113,11 +113,12 @@ Mensaje del usuario: "${text}"`;
     return { ...parsed, createdTask };
   });
 
-  // 🤖 Informe diario: análisis IA de las tareas pendientes
-  app.post('/daily-report', async (req, reply) => {
+  // 📊 Informe SEMANAL: análisis IA de últimos 7 días
+  app.post('/weekly-report', async (req, reply) => {
     if (!process.env.ANTHROPIC_API_KEY) return reply.code(500).send({ error: 'missing_anthropic_key' });
     const wid = req.user.workspaceId;
-    const start = new Date(); start.setHours(0,0,0,0);
+    const now = new Date();
+    const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
 
     const visFilter = {
       OR: [
@@ -131,115 +132,98 @@ Mensaje del usuario: "${text}"`;
       ],
     };
 
-    const [pending, overdue, completedToday, mine] = await Promise.all([
+    const [pendingAll, completedWeek, createdWeek, overdueAll, mineActive] = await Promise.all([
       app.prisma.task.findMany({
         where: { workspaceId: wid, status: { not: 'done' }, AND: [visFilter] },
         include: { assignee: { select: { name: true } } },
-        take: 50,
+        take: 80,
       }),
       app.prisma.task.findMany({
-        where: { workspaceId: wid, status: { not: 'done' }, dueDate: { lt: start }, AND: [visFilter] },
+        where: { workspaceId: wid, status: 'done', completedAt: { gte: weekAgo }, AND: [visFilter] },
+        include: { assignee: { select: { name: true } } },
+        take: 80,
+      }),
+      app.prisma.task.count({
+        where: { workspaceId: wid, createdAt: { gte: weekAgo }, AND: [visFilter] },
+      }),
+      app.prisma.task.findMany({
+        where: { workspaceId: wid, status: { not: 'done' }, dueDate: { lt: now }, AND: [visFilter] },
         include: { assignee: { select: { name: true } } },
       }),
-      app.prisma.task.count({ where: { workspaceId: wid, status: 'done', completedAt: { gte: start }, AND: [visFilter] } }),
-      app.prisma.task.findMany({
+      app.prisma.task.count({
         where: { workspaceId: wid, assigneeId: req.user.id, status: { not: 'done' }, AND: [visFilter] },
       }),
     ]);
 
     const me = await app.prisma.user.findUnique({ where: { id: req.user.id }, select: { name: true } });
 
+    // Agregar por persona
+    const byPerson = {};
+    for (const t of completedWeek) {
+      const n = t.assignee?.name || 'sin asignar';
+      byPerson[n] = (byPerson[n] || 0) + 1;
+    }
+
     const summary = {
       usuario: me?.name || 'Usuario',
-      pendientes_total: pending.length,
-      mis_pendientes: mine.length,
-      retrasadas: overdue.length,
-      completadas_hoy: completedToday,
-      tareas: pending.slice(0, 30).map(t => ({
+      semana_del: weekAgo.toISOString().slice(0, 10),
+      al: now.toISOString().slice(0, 10),
+      tareas_creadas_semana: createdWeek,
+      tareas_completadas_semana: completedWeek.length,
+      pendientes_total: pendingAll.length,
+      retrasadas: overdueAll.length,
+      mis_pendientes: mineActive,
+      completadas_por_persona: byPerson,
+      pendientes_alta_prioridad: pendingAll.filter(t => t.priority === 'high').slice(0, 10).map(t => ({
         title: t.title,
-        priority: t.priority,
-        due: t.dueDate?.toISOString().slice(0, 10) || 'sin fecha',
         assignee: t.assignee?.name || 'sin asignar',
-        status: t.status,
+        due: t.dueDate?.toISOString().slice(0, 10) || 'sin fecha',
       })),
     };
 
-    const prompt = `Eres un coach de productividad. Genera un informe MUY breve (máximo 200 palabras) en español para ${summary.usuario}, con tono cercano y motivador.
+    const prompt = `Eres un coach de productividad de equipos. Genera un INFORME SEMANAL en español, conciso (máximo 350 palabras), tono profesional pero cercano, en MARKDOWN.
 
-Datos del día:
+Datos de la semana del ${summary.semana_del} al ${summary.al}:
 ${JSON.stringify(summary, null, 2)}
 
-Estructura el informe en MARKDOWN con estas secciones:
+Estructura del informe:
 
-## ☀️ Buenos días, ${summary.usuario}
-(saludo + frase de contexto sobre el estado general)
+# 📊 Informe Semanal — ${summary.semana_del} a ${summary.al}
 
-## 🎯 Tus 3 prioridades de hoy
-(las 3 tareas más críticas DE LAS QUE TIENE ASIGNADAS, con razón breve de por qué)
+## 📈 Resumen general
+(2-3 frases sobre el rendimiento del equipo: completadas vs creadas, ratio, sensación general)
 
-## ⚠️ Alertas
-(retrasadas, alta prioridad sin fecha, tareas atascadas)
+## 👥 Rendimiento por persona
+(análisis breve del reparto de tareas completadas. Destaca a quien más ha hecho. Si hay desequilibrio, comentalo con tacto)
 
-## 💡 Sugerencia
-(un consejo concreto de productividad basado en los datos)
+## ⚠️ Puntos de atención
+(retrasadas, alta prioridad sin avanzar, posibles cuellos de botella)
 
-Responde SOLO el markdown, sin envolver en bloques de código.`;
+## 🎯 Recomendaciones para la próxima semana
+(2-3 acciones concretas y accionables)
 
-    try {
-      const resp = await client.messages.create({
-        model: MODEL, max_tokens: 800,
-        messages: [{ role: 'user', content: prompt }],
-      });
-      return { report: resp.content[0].text, stats: { pending: pending.length, overdue: overdue.length, completedToday, mine: mine.length } };
-    } catch (e) {
-      app.log.error({ err: e }, 'daily report error');
-      return reply.code(500).send({ error: 'ai_error', message: e.message });
-    }
-  });
+## 💡 Frase motivadora final
+(una frase corta de cierre)
 
-  // 🤖 Sugerencia IA para una tarea concreta
-  app.post('/task-suggestion/:taskId', async (req, reply) => {
-    if (!process.env.ANTHROPIC_API_KEY) return reply.code(500).send({ error: 'missing_anthropic_key' });
-    const task = await app.prisma.task.findFirst({
-      where: { id: req.params.taskId, workspaceId: req.user.workspaceId },
-      include: { comments: { include: { user: { select: { name: true } } } } },
-    });
-    if (!task) return reply.code(404).send({ error: 'not_found' });
-
-    const ctx = {
-      titulo: task.title,
-      descripcion: task.description || '(sin descripción)',
-      prioridad: task.priority,
-      vence: task.dueDate?.toISOString() || 'sin fecha',
-      etiquetas: task.tags,
-      comentarios: task.comments.map(c => `- ${c.user?.name}: ${c.text}`).join('\n') || '(ninguno)',
-    };
-
-    const prompt = `Eres un asistente que ayuda a planificar tareas de trabajo. Te paso una tarea y debes dar consejo práctico en ESPAÑOL, BREVE (máximo 150 palabras), formato markdown.
-
-Tarea:
-${JSON.stringify(ctx, null, 2)}
-
-Devuelve un análisis con:
-
-**🎯 Plan de acción** (3-4 pasos concretos para resolverla)
-
-**⏱️ Estimación** (cuánto tiempo aproximado)
-
-**⚠️ Posibles bloqueos** (qué podría salir mal)
-
-**💡 Tip** (un consejo práctico)
-
-Sin envolver en bloques de código. Solo el markdown.`;
+Devuelve SOLO el markdown, sin envolver en bloques de código. Nada de \`\`\`.`;
 
     try {
       const resp = await client.messages.create({
-        model: MODEL, max_tokens: 600,
+        model: MODEL, max_tokens: 1200,
         messages: [{ role: 'user', content: prompt }],
       });
-      return { suggestion: resp.content[0].text };
+      return {
+        report: resp.content[0].text,
+        period: { from: summary.semana_del, to: summary.al },
+        stats: {
+          created: createdWeek,
+          completed: completedWeek.length,
+          pending: pendingAll.length,
+          overdue: overdueAll.length,
+        },
+      };
     } catch (e) {
-      app.log.error({ err: e }, 'task suggestion error');
+      app.log.error({ err: e }, 'weekly report error');
       return reply.code(500).send({ error: 'ai_error', message: e.message });
     }
   });
