@@ -14,4 +14,4 @@ RUN npx prisma generate
 COPY . .
 
 EXPOSE 3000
-CMD ["sh", "-c", "npx prisma migrate deploy && node server.js"]
+CMD ["sh", "-c", "npx prisma db push --accept-data-loss --skip-generate && node server.js"]
