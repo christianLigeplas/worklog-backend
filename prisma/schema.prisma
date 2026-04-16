@@ -1,0 +1,114 @@
+generator client { provider = "prisma-client-js" }
+datasource db { provider = "postgresql"; url = env("DATABASE_URL") }
+
+// Equipo / espacio de trabajo compartido
+model Workspace {
+  id          String   @id @default(uuid())
+  name        String
+  inviteCode  String   @unique @map("invite_code")
+  createdAt   DateTime @default(now()) @map("created_at")
+  members     User[]
+  tasks       Task[]
+  projects    Project[]
+  @@map("workspaces")
+}
+
+model User {
+  id           String       @id @default(uuid())
+  workspaceId  String       @map("workspace_id")
+  email        String       @unique
+  passwordHash String       @map("password_hash")
+  name         String
+  role         String       @default("member")  // owner | member
+  pushToken    String?      @map("push_token")
+  createdAt    DateTime     @default(now()) @map("created_at")
+  workspace    Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  createdTasks Task[]       @relation("creator")
+  assignedTasks Task[]      @relation("assignee")
+  comments     Comment[]
+  @@map("users")
+}
+
+model Project {
+  id          String   @id @default(uuid())
+  workspaceId String   @map("workspace_id")
+  name        String
+  color       String   @default("#3b82f6")
+  createdAt   DateTime @default(now()) @map("created_at")
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  tasks       Task[]
+  @@map("projects")
+}
+
+model Task {
+  id           String        @id @default(uuid())
+  workspaceId  String        @map("workspace_id")
+  creatorId    String        @map("creator_id")
+  assigneeId   String?       @map("assignee_id")
+  projectId    String?       @map("project_id")
+  title        String
+  description  String?
+  status       String        @default("pending")  // pending | in_progress | done
+  priority     String        @default("medium")   // low | medium | high
+  dueDate      DateTime?     @map("due_date")
+  tags         String[]      @default([])
+  location     Json?
+  createdAt    DateTime      @default(now()) @map("created_at")
+  updatedAt    DateTime      @updatedAt @map("updated_at")
+  completedAt  DateTime?     @map("completed_at")
+  workspace    Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  creator      User          @relation("creator",  fields: [creatorId],  references: [id])
+  assignee     User?         @relation("assignee", fields: [assigneeId], references: [id])
+  project      Project?      @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  comments     Comment[]
+  attachments  Attachment[]
+  reminders    Reminder[]
+  @@index([workspaceId, status])
+  @@index([workspaceId, dueDate])
+  @@map("tasks")
+}
+
+model Comment {
+  id        String   @id @default(uuid())
+  taskId    String   @map("task_id")
+  userId    String   @map("user_id")
+  text      String
+  createdAt DateTime @default(now()) @map("created_at")
+  task      Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id])
+  @@map("comments")
+}
+
+model Attachment {
+  id        String   @id @default(uuid())
+  taskId    String   @map("task_id")
+  filename  String
+  path      String
+  mimeType  String?  @map("mime_type")
+  sizeBytes BigInt?  @map("size_bytes")
+  createdAt DateTime @default(now()) @map("created_at")
+  task      Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  @@map("attachments")
+}
+
+model Reminder {
+  id        String   @id @default(uuid())
+  taskId    String   @map("task_id")
+  remindAt  DateTime @map("remind_at")
+  sent      Boolean  @default(false)
+  task      Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  @@index([remindAt, sent])
+  @@map("reminders")
+}
+
+// Historial de conversación con el asistente
+model ChatMessage {
+  id          String   @id @default(uuid())
+  userId      String   @map("user_id")
+  role        String   // user | assistant
+  content     String
+  taskId      String?  @map("task_id")
+  createdAt   DateTime @default(now()) @map("created_at")
+  @@index([userId, createdAt])
+  @@map("chat_messages")
+}
