@@ -8,7 +8,6 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-// Equipo / espacio de trabajo compartido
 model Workspace {
   id         String    @id @default(uuid())
   name       String
@@ -34,6 +33,7 @@ model User {
   createdTasks  Task[]    @relation("creator")
   assignedTasks Task[]    @relation("assignee")
   comments      Comment[]
+  sharedWith    TaskShare[]
 
   @@map("users")
 }
@@ -60,6 +60,7 @@ model Task {
   description String?
   status      String       @default("pending")
   priority    String       @default("medium")
+  visibility  String       @default("public")  // private | shared | public
   dueDate     DateTime?    @map("due_date")
   tags        String[]     @default([])
   location    Json?
@@ -73,10 +74,22 @@ model Task {
   comments    Comment[]
   attachments Attachment[]
   reminders   Reminder[]
+  shares      TaskShare[]
 
   @@index([workspaceId, status])
   @@index([workspaceId, dueDate])
   @@map("tasks")
+}
+
+model TaskShare {
+  id     String @id @default(uuid())
+  taskId String @map("task_id")
+  userId String @map("user_id")
+  task   Task   @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([taskId, userId])
+  @@map("task_shares")
 }
 
 model Comment {
