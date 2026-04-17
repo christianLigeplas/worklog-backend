@@ -1,7 +1,3 @@
-// Construye filtro de visibilidad: el usuario ve task si:
-// - es público
-// - es privado y él es el creador
-// - es shared y él es creador, asignado, o está en shares
 function visibilityFilter(userId) {
   return {
     OR: [
@@ -21,16 +17,16 @@ export default async function taskRoutes(app) {
   app.addHook('onRequest', app.authenticate);
 
   app.get('/', async (req) => {
-    const { status, priority, projectId, assigneeId, from, to, q, mine } = req.query;
-    const where = {
-      workspaceId: req.user.workspaceId,
-      AND: [visibilityFilter(req.user.id)],
-    };
+    const { status, priority, projectId, assigneeId, from, to, q, mine, visibility } = req.query;
+    const where = { workspaceId: req.user.workspaceId, AND: [visibilityFilter(req.user.id)] };
     if (status) where.status = status;
     if (priority) where.priority = priority;
     if (projectId) where.projectId = projectId;
     if (assigneeId) where.assigneeId = assigneeId;
     if (mine === '1') where.assigneeId = req.user.id;
+    // Filtro por visibilidad específica
+    if (visibility === 'private') { where.AND.push({ visibility: 'private', creatorId: req.user.id }); }
+    else if (visibility === 'public') { where.AND.push({ visibility: 'public' }); }
     if (from || to) where.dueDate = {
       ...(from ? { gte: new Date(from) } : {}),
       ...(to ? { lte: new Date(to) } : {}),
@@ -57,11 +53,7 @@ export default async function taskRoutes(app) {
 
   app.get('/:id', async (req, reply) => {
     const task = await app.prisma.task.findFirst({
-      where: {
-        id: req.params.id,
-        workspaceId: req.user.workspaceId,
-        AND: [visibilityFilter(req.user.id)],
-      },
+      where: { id: req.params.id, workspaceId: req.user.workspaceId, AND: [visibilityFilter(req.user.id)] },
       include: {
         attachments: true,
         comments: { orderBy: { createdAt: 'asc' }, include: { user: { select: { name: true } } } },
@@ -83,13 +75,11 @@ export default async function taskRoutes(app) {
         creatorId: req.user.id,
         assigneeId: assigneeId || req.user.id,
         title: title || 'Sin título',
-        description,
-        projectId: projectId || null,
+        description, projectId: projectId || null,
         dueDate: dueDate ? new Date(dueDate) : null,
         priority: priority || 'medium',
-        tags: tags || [],
-        location: location || null,
-        visibility: ['private', 'shared', 'public'].includes(visibility) ? visibility : 'public',
+        tags: tags || [], location: location || null,
+        visibility: ['private', 'shared', 'public'].includes(visibility) ? visibility : 'private',
       },
     });
     if (Array.isArray(sharedWith) && sharedWith.length) {
@@ -100,18 +90,14 @@ export default async function taskRoutes(app) {
     }
     if (task.dueDate) {
       const remindAt = new Date(task.dueDate.getTime() - 60 * 60 * 1000);
-      if (remindAt > new Date())
-        await app.prisma.reminder.create({ data: { taskId: task.id, remindAt } });
+      if (remindAt > new Date()) await app.prisma.reminder.create({ data: { taskId: task.id, remindAt } });
     }
     return task;
   });
 
   app.patch('/:id', async (req, reply) => {
-    const t = await app.prisma.task.findFirst({
-      where: { id: req.params.id, workspaceId: req.user.workspaceId },
-    });
+    const t = await app.prisma.task.findFirst({ where: { id: req.params.id, workspaceId: req.user.workspaceId } });
     if (!t) return reply.code(404).send({ error: 'not_found' });
-    // Solo el creador puede cambiar visibility
     const data = { ...req.body };
     if (data.visibility && t.creatorId !== req.user.id) delete data.visibility;
     if (data.dueDate) data.dueDate = new Date(data.dueDate);
@@ -132,26 +118,19 @@ export default async function taskRoutes(app) {
   });
 
   app.delete('/:id', async (req, reply) => {
-    const t = await app.prisma.task.findFirst({
-      where: { id: req.params.id, workspaceId: req.user.workspaceId },
-    });
+    const t = await app.prisma.task.findFirst({ where: { id: req.params.id, workspaceId: req.user.workspaceId } });
     if (!t) return reply.code(404).send({ error: 'not_found' });
-    if (t.creatorId !== req.user.id) return reply.code(403).send({ error: 'only_creator_can_delete' });
+    if (t.creatorId !== req.user.id && req.user.role !== 'owner' && req.user.role !== 'admin')
+      return reply.code(403).send({ error: 'only_creator_or_admin' });
     await app.prisma.task.delete({ where: { id: t.id } });
     return { ok: true };
   });
 
   app.post('/:id/comments', async (req, reply) => {
     const t = await app.prisma.task.findFirst({
-      where: {
-        id: req.params.id,
-        workspaceId: req.user.workspaceId,
-        AND: [visibilityFilter(req.user.id)],
-      },
+      where: { id: req.params.id, workspaceId: req.user.workspaceId, AND: [visibilityFilter(req.user.id)] },
     });
     if (!t) return reply.code(404).send({ error: 'not_found' });
-    return app.prisma.comment.create({
-      data: { taskId: t.id, userId: req.user.id, text: req.body.text },
-    });
+    return app.prisma.comment.create({ data: { taskId: t.id, userId: req.user.id, text: req.body.text } });
   });
 }
