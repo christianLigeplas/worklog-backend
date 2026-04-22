@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "dev": "node --watch server.js",
-    "start": "npx prisma migrate deploy && node server.js",
+    "start": "npx prisma db push --accept-data-loss && node server.js",
     "postinstall": "prisma generate"
   },
   "dependencies": {
@@ -15,9 +15,9 @@
     "@fastify/static": "^7.0.4",
     "@prisma/client": "^5.20.0",
     "bcrypt": "^5.1.1",
-    "expo-server-sdk": "^3.10.0",
     "fastify": "^4.28.1",
     "node-cron": "^3.0.3",
-    "prisma": "^5.20.0"
+    "prisma": "^5.20.0",
+    "web-push": "^3.6.7"
   }
 }

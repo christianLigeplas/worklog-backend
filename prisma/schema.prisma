@@ -21,19 +21,21 @@ model Workspace {
 }
 
 model User {
-  id            String    @id @default(uuid())
-  workspaceId   String    @map("workspace_id")
-  email         String    @unique
-  passwordHash  String    @map("password_hash")
-  name          String
-  role          String    @default("member")
-  pushToken     String?   @map("push_token")
-  createdAt     DateTime  @default(now()) @map("created_at")
-  workspace     Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  createdTasks  Task[]    @relation("creator")
-  assignedTasks Task[]    @relation("assignee")
-  comments      Comment[]
-  sharedWith    TaskShare[]
+  id             String          @id @default(uuid())
+  workspaceId    String          @map("workspace_id")
+  email          String          @unique
+  passwordHash   String          @map("password_hash")
+  name           String
+  role           String          @default("member")
+  pushToken      String?         @map("push_token")
+  createdAt      DateTime        @default(now()) @map("created_at")
+  workspace      Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  createdTasks   Task[]          @relation("creator")
+  assignedTasks  Task[]          @relation("assignee")
+  comments       Comment[]
+  sharedWith     TaskShare[]
+  notifications  Notification[]
+  pushSubs       PushSubscription[]
 
   @@map("users")
 }
@@ -60,10 +62,13 @@ model Task {
   description String?
   status      String       @default("pending")
   priority    String       @default("medium")
-  visibility  String       @default("public")  // private | shared | public
+  visibility  String       @default("private")
   dueDate     DateTime?    @map("due_date")
+  startDate   DateTime?    @map("start_date")
   tags        String[]     @default([])
   location    Json?
+  archived    Boolean      @default(false)
+  archivedAt  DateTime?    @map("archived_at")
   createdAt   DateTime     @default(now()) @map("created_at")
   updatedAt   DateTime     @updatedAt @map("updated_at")
   completedAt DateTime?    @map("completed_at")
@@ -78,6 +83,7 @@ model Task {
 
   @@index([workspaceId, status])
   @@index([workspaceId, dueDate])
+  @@index([workspaceId, archived])
   @@map("tasks")
 }
 
@@ -118,14 +124,43 @@ model Attachment {
 }
 
 model Reminder {
-  id       String   @id @default(uuid())
-  taskId   String   @map("task_id")
-  remindAt DateTime @map("remind_at")
-  sent     Boolean  @default(false)
-  task     Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  id        String   @id @default(uuid())
+  taskId    String   @map("task_id")
+  userId    String?  @map("user_id")
+  message   String?
+  remindAt  DateTime @map("remind_at")
+  sent      Boolean  @default(false)
+  task      Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
 
   @@index([remindAt, sent])
   @@map("reminders")
+}
+
+model Notification {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  taskId    String?  @map("task_id")
+  title     String
+  body      String?
+  read      Boolean  @default(false)
+  createdAt DateTime @default(now()) @map("created_at")
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, read])
+  @@index([userId, createdAt])
+  @@map("notifications")
+}
+
+model PushSubscription {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  endpoint  String   @unique
+  p256dh    String
+  auth      String
+  createdAt DateTime @default(now()) @map("created_at")
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("push_subscriptions")
 }
 
 model ChatMessage {
@@ -134,6 +169,7 @@ model ChatMessage {
   role      String
   content   String
   taskId    String?  @map("task_id")
+  metadata  Json?
   createdAt DateTime @default(now()) @map("created_at")
 
   @@index([userId, createdAt])

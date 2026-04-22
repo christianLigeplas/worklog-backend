@@ -15,7 +15,9 @@ import attachmentRoutes from './src/routes/attachments.js';
 import summaryRoutes from './src/routes/summaries.js';
 import assistantRoutes from './src/routes/assistant.js';
 import workspaceRoutes from './src/routes/workspace.js';
+import notificationRoutes from './src/routes/notifications.js';
 import { startCronJobs } from './src/services/cron.js';
+import { initPush } from './src/services/push.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
@@ -32,8 +34,7 @@ await app.register(fastifyStatic, { root: DATA_DIR, prefix: '/files/' });
 app.decorate('prisma', prisma);
 app.decorate('dataDir', DATA_DIR);
 app.decorate('authenticate', async (req, reply) => {
-  try { await req.jwtVerify(); }
-  catch { reply.code(401).send({ error: 'unauthorized' }); }
+  try { await req.jwtVerify(); } catch { reply.code(401).send({ error: 'unauthorized' }); }
 });
 
 app.get('/health', async () => ({ ok: true, time: new Date().toISOString() }));
@@ -45,7 +46,9 @@ await app.register(taskRoutes,        { prefix: '/tasks' });
 await app.register(attachmentRoutes,  { prefix: '/attachments' });
 await app.register(summaryRoutes,     { prefix: '/summaries' });
 await app.register(assistantRoutes,   { prefix: '/assistant' });
+await app.register(notificationRoutes,{ prefix: '/notifications' });
 
+initPush();
 startCronJobs(prisma);
 
 const port = Number(process.env.PORT || 3000);

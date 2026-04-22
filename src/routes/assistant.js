@@ -7,36 +7,29 @@ const SYSTEM_PROMPT = `Eres un asistente de productividad para un equipo de trab
 
 Cuando el usuario escriba algo, analiza si quiere CREAR UNA TAREA o si es solo CONVERSACIÓN.
 
-IMPORTANTE: NO crees tareas automáticamente. Si parece una tarea, PREGUNTA primero para confirmar los detalles.
+IMPORTANTE: NO crees tareas automáticamente. Si parece una tarea, PROPÓN los detalles para que el usuario los revise. El usuario usará un botón para confirmar.
 
 Responde siempre SOLO con JSON puro (sin markdown, sin backticks).
 
 Si el usuario describe algo que PODRÍA ser una tarea, responde así:
 {
-  "action": "confirm_task",
+  "action": "propose_task",
   "task": {
     "title": "título sugerido",
     "description": "descripción sugerida",
     "priority": "low" | "medium" | "high",
     "dueDate": "ISO 8601 o null",
     "tags": ["etiquetas"],
-    "assigneeName": "nombre o null"
+    "assigneeName": "nombre del miembro o null"
   },
-  "reply": "He preparado esta tarea:\\n\\n📌 **Título:** ...\\n📝 **Descripción:** ...\\n⏰ **Fecha:** ...\\n🔴 **Prioridad:** ...\\n\\n¿La creo así o quieres cambiar algo?"
+  "reply": "He preparado esta tarea. Revísala y pulsa el botón para crearla:\\n\\n📌 **Título:** ...\\n📝 **Descripción:** ...\\n⏰ **Fecha:** ...\\n🔴 **Prioridad:** ..."
 }
 
-Si el usuario CONFIRMA (dice sí, ok, dale, créala, perfecto, etc.):
+Si el usuario quiere MODIFICAR una propuesta previa:
 {
-  "action": "create_task",
-  "task": { (usar los datos de la última tarea confirmada) },
-  "reply": "✅ Tarea creada: ..."
-}
-
-Si el usuario quiere MODIFICAR antes de crear:
-{
-  "action": "confirm_task",
-  "task": { (con los cambios aplicados) },
-  "reply": "He actualizado la tarea:\\n\\n📌 **Título:** ...\\n\\n¿La creo así?"
+  "action": "propose_task",
+  "task": { (actualizada) },
+  "reply": "He actualizado la tarea:\\n\\n📌 **Título:** ...\\n(...)"
 }
 
 Si NO es una tarea (saludo, pregunta, charla):
@@ -45,12 +38,10 @@ Si NO es una tarea (saludo, pregunta, charla):
   "reply": "respuesta amable"
 }
 
-Reglas de prioridad:
+Reglas:
 - "urgente", "ya", "asap", "crítico" → high
 - "cuando puedas", "sin prisa" → low
 - Sin indicación → medium
-
-Fechas:
 - "mañana" → fecha de mañana 09:00
 - "esta tarde" → hoy 17:00
 - "el lunes" → próximo lunes 09:00
@@ -74,6 +65,7 @@ export default async function assistantRoutes(app) {
     return { ok: true };
   });
 
+  // Procesar mensaje (propone, no crea)
   app.post('/message', async (req, reply) => {
     const { text } = req.body || {};
     if (!text?.trim()) return reply.code(400).send({ error: 'empty_text' });
@@ -86,7 +78,6 @@ export default async function assistantRoutes(app) {
     });
     const me = members.find(m => m.id === req.user.id);
 
-    // Contexto con últimos 6 mensajes para mantener conversación
     const recent = await app.prisma.chatMessage.findMany({
       where: { userId: req.user.id }, orderBy: { createdAt: 'desc' }, take: 6,
     });
@@ -100,8 +91,6 @@ Hablo con: ${me?.name || 'Usuario'}
 Miembros del equipo: ${members.map(m => m.name).join(', ')}
 
 Mensaje: "${text}"`;
-
-    // Reemplazar último mensaje con el contextualizado
     if (history.length > 0) history[history.length - 1].content = contextMsg;
 
     let parsed;
@@ -113,42 +102,61 @@ Mensaje: "${text}"`;
       parsed = safeParse(resp.content[0].text);
     } catch (e) {
       app.log.error({ err: e }, 'assistant parse error');
-      const fb = { action: 'chat', reply: 'No pude procesar la petición. Comprueba el saldo de Anthropic o reformula.' };
+      const fb = { action: 'chat', reply: 'No pude procesar. Comprueba el saldo de Anthropic o reformula.' };
       await app.prisma.chatMessage.create({ data: { userId: req.user.id, role: 'assistant', content: fb.reply } });
       return fb;
     }
 
-    let createdTask = null;
+    // Guardar respuesta con metadata si es una propuesta
+    const metadata = parsed.action === 'propose_task' ? { proposedTask: parsed.task } : null;
+    await app.prisma.chatMessage.create({
+      data: {
+        userId: req.user.id, role: 'assistant',
+        content: parsed.reply || '✅ Hecho',
+        metadata,
+      },
+    });
+    return parsed;
+  });
 
-    // Solo crear si action es exactamente "create_task"
-    if (parsed.action === 'create_task' && parsed.task) {
-      const t = parsed.task;
-      const assignee = t.assigneeName
-        ? members.find(m => m.name.toLowerCase().includes(t.assigneeName.toLowerCase()))
-        : null;
-      createdTask = await app.prisma.task.create({
-        data: {
-          workspaceId: req.user.workspaceId,
-          creatorId: req.user.id,
-          assigneeId: assignee?.id || req.user.id,
-          title: t.title || 'Sin título',
-          description: t.description || null,
-          priority: ['low', 'medium', 'high'].includes(t.priority) ? t.priority : 'medium',
-          dueDate: t.dueDate ? new Date(t.dueDate) : null,
-          tags: Array.isArray(t.tags) ? t.tags : [],
-          visibility: 'private',  // por defecto privada
-        },
-      });
-      if (createdTask.dueDate) {
-        const remindAt = new Date(createdTask.dueDate.getTime() - 60 * 60 * 1000);
-        if (remindAt > new Date()) await app.prisma.reminder.create({ data: { taskId: createdTask.id, remindAt } });
-      }
+  // Crear tarea confirmada desde el chat
+  app.post('/create-task', async (req) => {
+    const { task } = req.body || {};
+    if (!task?.title) return { error: 'title_required' };
+
+    const members = await app.prisma.user.findMany({
+      where: { workspaceId: req.user.workspaceId }, select: { id: true, name: true },
+    });
+    const assignee = task.assigneeName
+      ? members.find(m => m.name.toLowerCase().includes(task.assigneeName.toLowerCase()))
+      : null;
+
+    const created = await app.prisma.task.create({
+      data: {
+        workspaceId: req.user.workspaceId,
+        creatorId: req.user.id,
+        assigneeId: assignee?.id || req.user.id,
+        title: task.title,
+        description: task.description || null,
+        priority: ['low', 'medium', 'high'].includes(task.priority) ? task.priority : 'medium',
+        dueDate: task.dueDate ? new Date(task.dueDate) : null,
+        tags: Array.isArray(task.tags) ? task.tags : [],
+        visibility: 'private',
+      },
+    });
+    if (created.dueDate) {
+      const remindAt = new Date(created.dueDate.getTime() - 60 * 60 * 1000);
+      if (remindAt > new Date()) await app.prisma.reminder.create({ data: { taskId: created.id, remindAt } });
     }
 
     await app.prisma.chatMessage.create({
-      data: { userId: req.user.id, role: 'assistant', content: parsed.reply || '✅ Hecho', taskId: createdTask?.id },
+      data: {
+        userId: req.user.id, role: 'assistant',
+        content: `✅ Tarea creada: "${created.title}"`,
+        taskId: created.id,
+      },
     });
-    return { ...parsed, createdTask };
+    return { task: created };
   });
 
   // Informe semanal
@@ -160,7 +168,7 @@ Mensaje: "${text}"`;
 
     const [pendingAll, completedWeek, createdWeek, overdueAll] = await Promise.all([
       app.prisma.task.findMany({
-        where: { workspaceId: wid, status: { not: 'done' } },
+        where: { workspaceId: wid, status: { not: 'done' }, archived: false },
         include: { assignee: { select: { name: true } } }, take: 80,
       }),
       app.prisma.task.findMany({
@@ -169,7 +177,7 @@ Mensaje: "${text}"`;
       }),
       app.prisma.task.count({ where: { workspaceId: wid, createdAt: { gte: weekAgo } } }),
       app.prisma.task.findMany({
-        where: { workspaceId: wid, status: { not: 'done' }, dueDate: { lt: now } },
+        where: { workspaceId: wid, status: { not: 'done' }, dueDate: { lt: now }, archived: false },
         include: { assignee: { select: { name: true } } },
       }),
     ]);
@@ -183,7 +191,8 @@ Mensaje: "${text}"`;
       creadas: createdWeek, completadas: completedWeek.length, pendientes: pendingAll.length,
       retrasadas: overdueAll.length, por_persona: byPerson,
       alta_prioridad: pendingAll.filter(t => t.priority === 'high').slice(0, 10).map(t => ({
-        title: t.title, assignee: t.assignee?.name || 'sin asignar', due: t.dueDate?.toISOString().slice(0, 10) || 'sin fecha',
+        title: t.title, assignee: t.assignee?.name || 'sin asignar',
+        due: t.dueDate?.toISOString().slice(0, 10) || 'sin fecha',
       })),
     };
 
