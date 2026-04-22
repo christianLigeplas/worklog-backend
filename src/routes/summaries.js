@@ -1,37 +1,90 @@
+import { visibilityWhere, getUserTeamIds } from '../utils/visibility.js';
+
 export default async function summaryRoutes(app) {
   app.addHook('onRequest', app.authenticate);
 
   app.get('/daily', async (req) => {
+    const userId = req.user.id;
     const wid = req.user.workspaceId;
-    const start = new Date(); start.setHours(0,0,0,0);
-    const end = new Date();   end.setHours(23,59,59,999);
+    const teamIds = await getUserTeamIds(app.prisma, userId);
 
-    const includeBase = {
+    const now = new Date();
+    const startOfDay = new Date(now); startOfDay.setHours(0, 0, 0, 0);
+    const endOfDay = new Date(now); endOfDay.setHours(23, 59, 59, 999);
+
+    const baseAnd = [
+      { workspaceId: wid },
+      { archived: false },
+      visibilityWhere(userId, teamIds),
+    ];
+    const include = {
       assignee: { select: { id: true, name: true } },
-      project: { select: { name: true, color: true } },
+      creator: { select: { id: true, name: true } },
+      team: { select: { id: true, name: true, color: true } },
     };
 
-    const [dueToday, overdue, completedToday, highPriority, myTasks] = await Promise.all([
+    const [myTasks, dueToday, overdue, highPriority, completedToday] = await Promise.all([
+      // Mis tareas: asignadas a mí (principal o múltiple) y no completadas
       app.prisma.task.findMany({
-        where: { workspaceId: wid, status: { not: 'done' }, dueDate: { gte: start, lte: end } },
-        orderBy: { priority: 'desc' }, include: includeBase,
+        where: {
+          AND: [
+            ...baseAnd,
+            {
+              OR: [
+                { assigneeId: userId },
+                { assignees: { some: { userId } } },
+              ],
+            },
+            { status: { not: 'done' } },
+          ],
+        },
+        orderBy: [{ priority: 'desc' }, { dueDate: 'asc' }],
+        include, take: 20,
       }),
       app.prisma.task.findMany({
-        where: { workspaceId: wid, status: { not: 'done' }, dueDate: { lt: start } },
-        include: includeBase,
+        where: {
+          AND: [
+            ...baseAnd,
+            { status: { not: 'done' } },
+            { dueDate: { gte: startOfDay, lte: endOfDay } },
+          ],
+        },
+        orderBy: { dueDate: 'asc' },
+        include, take: 20,
+      }),
+      app.prisma.task.findMany({
+        where: {
+          AND: [
+            ...baseAnd,
+            { status: { not: 'done' } },
+            { dueDate: { lt: startOfDay } },
+          ],
+        },
+        orderBy: { dueDate: 'asc' },
+        include, take: 20,
+      }),
+      app.prisma.task.findMany({
+        where: {
+          AND: [
+            ...baseAnd,
+            { status: { not: 'done' } },
+            { priority: 'high' },
+          ],
+        },
+        orderBy: { dueDate: 'asc' },
+        include, take: 20,
       }),
       app.prisma.task.count({
-        where: { workspaceId: wid, status: 'done', completedAt: { gte: start, lte: end } },
-      }),
-      app.prisma.task.findMany({
-        where: { workspaceId: wid, status: { not: 'done' }, priority: 'high' },
-        take: 5, include: includeBase,
-      }),
-      app.prisma.task.findMany({
-        where: { workspaceId: wid, assigneeId: req.user.id, status: { not: 'done' } },
-        orderBy: { dueDate: 'asc' }, take: 10, include: includeBase,
+        where: {
+          AND: [
+            ...baseAnd,
+            { status: 'done' },
+            { completedAt: { gte: startOfDay, lte: endOfDay } },
+          ],
+        },
       }),
     ]);
-    return { dueToday, overdue, completedToday, highPriority, myTasks };
+
+    return { myTasks, dueToday, overdue, highPriority, completedToday };
   });
 }

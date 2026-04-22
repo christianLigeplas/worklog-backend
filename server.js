@@ -16,6 +16,7 @@ import summaryRoutes from './src/routes/summaries.js';
 import assistantRoutes from './src/routes/assistant.js';
 import workspaceRoutes from './src/routes/workspace.js';
 import notificationRoutes from './src/routes/notifications.js';
+import teamRoutes from './src/routes/teams.js';
 import { startCronJobs } from './src/services/cron.js';
 import { initPush } from './src/services/push.js';
 
@@ -41,6 +42,7 @@ app.get('/health', async () => ({ ok: true, time: new Date().toISOString() }));
 
 await app.register(authRoutes,        { prefix: '/auth' });
 await app.register(workspaceRoutes,   { prefix: '/workspace' });
+await app.register(teamRoutes,        { prefix: '/teams' });
 await app.register(projectRoutes,     { prefix: '/projects' });
 await app.register(taskRoutes,        { prefix: '/tasks' });
 await app.register(attachmentRoutes,  { prefix: '/attachments' });

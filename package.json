@@ -4,7 +4,8 @@
   "type": "module",
   "scripts": {
     "dev": "node --watch server.js",
-    "start": "npx prisma db push --accept-data-loss && node server.js",
+    "start": "npx prisma db push --accept-data-loss && node scripts/reset-tasks.js && node server.js",
+    "reset": "node scripts/reset-tasks.js",
     "postinstall": "prisma generate"
   },
   "dependencies": {

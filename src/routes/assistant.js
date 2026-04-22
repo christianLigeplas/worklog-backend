@@ -5,44 +5,37 @@ const MODEL = 'claude-haiku-4-5-20251001';
 
 const SYSTEM_PROMPT = `Eres un asistente de productividad para un equipo de trabajo. Hablas español.
 
-Cuando el usuario escriba algo, analiza si quiere CREAR UNA TAREA o si es solo CONVERSACIÓN.
+IMPORTANTE: NO crees tareas automáticamente. Si parece una tarea, PROPÓN los detalles. El usuario usará un botón para confirmar.
 
-IMPORTANTE: NO crees tareas automáticamente. Si parece una tarea, PROPÓN los detalles para que el usuario los revise. El usuario usará un botón para confirmar.
+Responde SOLO con JSON puro (sin markdown, sin backticks).
 
-Responde siempre SOLO con JSON puro (sin markdown, sin backticks).
-
-Si el usuario describe algo que PODRÍA ser una tarea, responde así:
+Si describe una tarea, responde:
 {
   "action": "propose_task",
   "task": {
-    "title": "título sugerido",
-    "description": "descripción sugerida",
+    "title": "título",
+    "description": "descripción",
     "priority": "low" | "medium" | "high",
     "dueDate": "ISO 8601 o null",
     "tags": ["etiquetas"],
-    "assigneeName": "nombre del miembro o null"
+    "assigneeName": "nombre o null",
+    "visibility": "private" | "team" | "public"
   },
-  "reply": "He preparado esta tarea. Revísala y pulsa el botón para crearla:\\n\\n📌 **Título:** ...\\n📝 **Descripción:** ...\\n⏰ **Fecha:** ...\\n🔴 **Prioridad:** ..."
+  "reply": "He preparado esta tarea:\\n\\n📌 **Título:** ...\\n📝 **Descripción:** ...\\n⏰ **Fecha:** ...\\n🔴 **Prioridad:** ..."
 }
 
-Si el usuario quiere MODIFICAR una propuesta previa:
-{
-  "action": "propose_task",
-  "task": { (actualizada) },
-  "reply": "He actualizado la tarea:\\n\\n📌 **Título:** ...\\n(...)"
-}
+NOTA: La visibilidad por defecto es "private". Solo usa "team" o "public" si el usuario lo indica explícitamente ("tarea de equipo", "tarea para todos", etc.).
 
-Si NO es una tarea (saludo, pregunta, charla):
+Si NO es tarea (saludo, pregunta):
 {
   "action": "chat",
   "reply": "respuesta amable"
 }
 
 Reglas:
-- "urgente", "ya", "asap", "crítico" → high
-- "cuando puedas", "sin prisa" → low
-- Sin indicación → medium
-- "mañana" → fecha de mañana 09:00
+- "urgente/ya/asap" → high
+- "cuando puedas/sin prisa" → low
+- "mañana" → mañana 09:00
 - "esta tarde" → hoy 17:00
 - "el lunes" → próximo lunes 09:00
 
@@ -65,7 +58,6 @@ export default async function assistantRoutes(app) {
     return { ok: true };
   });
 
-  // Procesar mensaje (propone, no crea)
   app.post('/message', async (req, reply) => {
     const { text } = req.body || {};
     if (!text?.trim()) return reply.code(400).send({ error: 'empty_text' });
@@ -102,12 +94,11 @@ Mensaje: "${text}"`;
       parsed = safeParse(resp.content[0].text);
     } catch (e) {
       app.log.error({ err: e }, 'assistant parse error');
-      const fb = { action: 'chat', reply: 'No pude procesar. Comprueba el saldo de Anthropic o reformula.' };
+      const fb = { action: 'chat', reply: 'No pude procesar. Comprueba el saldo o reformula.' };
       await app.prisma.chatMessage.create({ data: { userId: req.user.id, role: 'assistant', content: fb.reply } });
       return fb;
     }
 
-    // Guardar respuesta con metadata si es una propuesta
     const metadata = parsed.action === 'propose_task' ? { proposedTask: parsed.task } : null;
     await app.prisma.chatMessage.create({
       data: {
@@ -119,47 +110,45 @@ Mensaje: "${text}"`;
     return parsed;
   });
 
-  // Crear tarea confirmada desde el chat
   app.post('/create-task', async (req) => {
     const { task } = req.body || {};
     if (!task?.title) return { error: 'title_required' };
 
+    const vis = ['private', 'team', 'public'].includes(task.visibility) ? task.visibility : 'private';
+
     const members = await app.prisma.user.findMany({
       where: { workspaceId: req.user.workspaceId }, select: { id: true, name: true },
     });
-    const assignee = task.assigneeName
-      ? members.find(m => m.name.toLowerCase().includes(task.assigneeName.toLowerCase()))
-      : null;
+    let assigneeId = req.user.id;
+    if (vis !== 'private' && task.assigneeName) {
+      const found = members.find(m => m.name.toLowerCase().includes(task.assigneeName.toLowerCase()));
+      if (found) assigneeId = found.id;
+    }
 
     const created = await app.prisma.task.create({
       data: {
         workspaceId: req.user.workspaceId,
         creatorId: req.user.id,
-        assigneeId: assignee?.id || req.user.id,
+        assigneeId,
         title: task.title,
         description: task.description || null,
         priority: ['low', 'medium', 'high'].includes(task.priority) ? task.priority : 'medium',
         dueDate: task.dueDate ? new Date(task.dueDate) : null,
         tags: Array.isArray(task.tags) ? task.tags : [],
-        visibility: 'private',
+        visibility: vis,
       },
     });
     if (created.dueDate) {
       const remindAt = new Date(created.dueDate.getTime() - 60 * 60 * 1000);
       if (remindAt > new Date()) await app.prisma.reminder.create({ data: { taskId: created.id, remindAt } });
     }
-
     await app.prisma.chatMessage.create({
-      data: {
-        userId: req.user.id, role: 'assistant',
-        content: `✅ Tarea creada: "${created.title}"`,
-        taskId: created.id,
-      },
+      data: { userId: req.user.id, role: 'assistant',
+        content: `✅ Tarea creada: "${created.title}"`, taskId: created.id },
     });
     return { task: created };
   });
 
-  // Informe semanal
   app.post('/weekly-report', async (req, reply) => {
     if (!process.env.ANTHROPIC_API_KEY) return reply.code(500).send({ error: 'missing_anthropic_key' });
     const wid = req.user.workspaceId;
@@ -190,10 +179,6 @@ Mensaje: "${text}"`;
       usuario: me?.name, semana_del: weekAgo.toISOString().slice(0, 10), al: now.toISOString().slice(0, 10),
       creadas: createdWeek, completadas: completedWeek.length, pendientes: pendingAll.length,
       retrasadas: overdueAll.length, por_persona: byPerson,
-      alta_prioridad: pendingAll.filter(t => t.priority === 'high').slice(0, 10).map(t => ({
-        title: t.title, assignee: t.assignee?.name || 'sin asignar',
-        due: t.dueDate?.toISOString().slice(0, 10) || 'sin fecha',
-      })),
     };
 
     const prompt = `Genera informe semanal en español, conciso (max 350 palabras), markdown.

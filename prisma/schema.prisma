@@ -16,28 +16,56 @@ model Workspace {
   members    User[]
   tasks      Task[]
   projects   Project[]
+  teams      Team[]
 
   @@map("workspaces")
 }
 
 model User {
-  id             String          @id @default(uuid())
-  workspaceId    String          @map("workspace_id")
-  email          String          @unique
-  passwordHash   String          @map("password_hash")
+  id             String             @id @default(uuid())
+  workspaceId    String             @map("workspace_id")
+  email          String             @unique
+  passwordHash   String             @map("password_hash")
   name           String
-  role           String          @default("member")
-  pushToken      String?         @map("push_token")
-  createdAt      DateTime        @default(now()) @map("created_at")
-  workspace      Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  createdTasks   Task[]          @relation("creator")
-  assignedTasks  Task[]          @relation("assignee")
+  role           String             @default("member")
+  pushToken      String?            @map("push_token")
+  createdAt      DateTime           @default(now()) @map("created_at")
+  workspace      Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  createdTasks   Task[]             @relation("creator")
+  primaryAssigned Task[]            @relation("primaryAssignee")
   comments       Comment[]
-  sharedWith     TaskShare[]
   notifications  Notification[]
   pushSubs       PushSubscription[]
+  teamMemberships TeamMember[]
+  taskAssignments TaskAssignee[]
 
   @@map("users")
+}
+
+model Team {
+  id          String       @id @default(uuid())
+  workspaceId String       @map("workspace_id")
+  name        String
+  color       String       @default("#3b82f6")
+  createdAt   DateTime     @default(now()) @map("created_at")
+  workspace   Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  members     TeamMember[]
+  tasks       Task[]
+
+  @@index([workspaceId])
+  @@map("teams")
+}
+
+model TeamMember {
+  id     String @id @default(uuid())
+  teamId String @map("team_id")
+  userId String @map("user_id")
+  team   Team   @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([teamId, userId])
+  @@index([userId])
+  @@map("team_members")
 }
 
 model Project {
@@ -56,13 +84,14 @@ model Task {
   id          String       @id @default(uuid())
   workspaceId String       @map("workspace_id")
   creatorId   String       @map("creator_id")
-  assigneeId  String?      @map("assignee_id")
+  assigneeId  String?      @map("assignee_id")   // responsable principal (legacy)
+  teamId      String?      @map("team_id")        // equipo asignado (opcional)
   projectId   String?      @map("project_id")
   title       String
   description String?
   status      String       @default("pending")
   priority    String       @default("medium")
-  visibility  String       @default("private")
+  visibility  String       @default("private")   // private | team | public
   dueDate     DateTime?    @map("due_date")
   startDate   DateTime?    @map("start_date")
   tags        String[]     @default([])
@@ -74,20 +103,22 @@ model Task {
   completedAt DateTime?    @map("completed_at")
   workspace   Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   creator     User         @relation("creator", fields: [creatorId], references: [id])
-  assignee    User?        @relation("assignee", fields: [assigneeId], references: [id])
+  assignee    User?        @relation("primaryAssignee", fields: [assigneeId], references: [id])
+  team        Team?        @relation(fields: [teamId], references: [id], onDelete: SetNull)
   project     Project?     @relation(fields: [projectId], references: [id], onDelete: SetNull)
   comments    Comment[]
   attachments Attachment[]
   reminders   Reminder[]
-  shares      TaskShare[]
+  assignees   TaskAssignee[]
 
   @@index([workspaceId, status])
   @@index([workspaceId, dueDate])
   @@index([workspaceId, archived])
+  @@index([workspaceId, teamId])
   @@map("tasks")
 }
 
-model TaskShare {
+model TaskAssignee {
   id     String @id @default(uuid())
   taskId String @map("task_id")
   userId String @map("user_id")
@@ -95,7 +126,8 @@ model TaskShare {
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([taskId, userId])
-  @@map("task_shares")
+  @@index([userId])
+  @@map("task_assignees")
 }
 
 model Comment {
