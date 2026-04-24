@@ -84,14 +84,14 @@ model Task {
   id          String       @id @default(uuid())
   workspaceId String       @map("workspace_id")
   creatorId   String       @map("creator_id")
-  assigneeId  String?      @map("assignee_id")   // responsable principal (legacy)
-  teamId      String?      @map("team_id")        // equipo asignado (opcional)
+  assigneeId  String?      @map("assignee_id")
+  teamId      String?      @map("team_id")
   projectId   String?      @map("project_id")
   title       String
   description String?
   status      String       @default("pending")
   priority    String       @default("medium")
-  visibility  String       @default("private")   // private | team | public
+  visibility  String       @default("private")
   dueDate     DateTime?    @map("due_date")
   startDate   DateTime?    @map("start_date")
   tags        String[]     @default([])

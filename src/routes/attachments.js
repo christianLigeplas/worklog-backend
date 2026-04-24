@@ -2,7 +2,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
 
-// Tipos permitidos: imágenes + documentos comunes
 const ALLOWED = [
   'image/', 'application/pdf', 'application/msword',
   'application/vnd.openxmlformats-officedocument',
@@ -22,7 +21,6 @@ export default async function attachmentRoutes(app) {
     const data = await req.file();
     if (!data) return reply.code(400).send({ error: 'no_file' });
 
-    // Permitir tipos comunes; rechazar binarios raros
     const mime = data.mimetype || 'application/octet-stream';
     const ok = ALLOWED.some(prefix => mime.startsWith(prefix));
     if (!ok) return reply.code(400).send({ error: 'file_type_not_allowed', mime });

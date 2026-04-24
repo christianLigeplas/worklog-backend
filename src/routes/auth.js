@@ -1,65 +1,77 @@
 import bcrypt from 'bcrypt';
+import crypto from 'node:crypto';
 
 export default async function authRoutes(app) {
-  // Registro: requiere código de invitación del workspace
+  // Login
+  app.post('/login', async (req, reply) => {
+    const { email, password } = req.body || {};
+    if (!email || !password) return reply.code(400).send({ error: 'missing_fields' });
+    const user = await app.prisma.user.findUnique({ where: { email } });
+    if (!user) return reply.code(401).send({ error: 'invalid_credentials' });
+    const ok = await bcrypt.compare(password, user.passwordHash);
+    if (!ok) return reply.code(401).send({ error: 'invalid_credentials' });
+    const token = app.jwt.sign({ id: user.id, workspaceId: user.workspaceId, role: user.role });
+    return {
+      token,
+      user: { id: user.id, email: user.email, name: user.name, role: user.role, workspaceId: user.workspaceId },
+    };
+  });
+
+  // Register
   app.post('/register', async (req, reply) => {
     const { email, password, name, inviteCode } = req.body || {};
     if (!email || !password || !name) return reply.code(400).send({ error: 'missing_fields' });
 
-    let workspace;
-    if (inviteCode) {
-      workspace = await app.prisma.workspace.findUnique({ where: { inviteCode } });
-      if (!workspace) return reply.code(400).send({ error: 'invalid_invite_code' });
-    } else {
-      // Sin código: ¿es el primer usuario? Crea el workspace inicial con código maestro
-      const masterCode = process.env.WORKSPACE_INVITE_CODE || 'EQUIPO2026';
-      workspace = await app.prisma.workspace.findUnique({ where: { inviteCode: masterCode } });
-      if (!workspace) {
-        workspace = await app.prisma.workspace.create({
-          data: { name: 'Mi Equipo', inviteCode: masterCode },
-        });
-      }
-    }
-
     const exists = await app.prisma.user.findUnique({ where: { email } });
     if (exists) return reply.code(409).send({ error: 'email_in_use' });
 
-    const userCount = await app.prisma.user.count({ where: { workspaceId: workspace.id } });
-    const role = userCount === 0 ? 'owner' : 'member';
+    let workspaceId; let role = 'owner';
+    if (inviteCode) {
+      const envCode = process.env.WORKSPACE_INVITE_CODE;
+      const envMatches = envCode && envCode === inviteCode;
+      let ws = null;
+      if (envMatches) {
+        ws = await app.prisma.workspace.findFirst({ orderBy: { createdAt: 'asc' } });
+      } else {
+        ws = await app.prisma.workspace.findUnique({ where: { inviteCode } });
+      }
+      if (!ws) return reply.code(400).send({ error: 'invalid_invite_code' });
+      workspaceId = ws.id;
+      role = 'member';
+    } else {
+      const newWs = await app.prisma.workspace.create({
+        data: {
+          name: `${name}'s workspace`,
+          inviteCode: crypto.randomBytes(4).toString('hex').toUpperCase(),
+        },
+      });
+      workspaceId = newWs.id;
+    }
 
+    const passwordHash = await bcrypt.hash(password, 10);
     const user = await app.prisma.user.create({
-      data: {
-        email, name,
-        passwordHash: await bcrypt.hash(password, 10),
-        workspaceId: workspace.id,
-        role,
-      },
+      data: { email, passwordHash, name, workspaceId, role },
     });
 
-    const token = app.jwt.sign({ id: user.id, workspaceId: workspace.id, role });
-    return { token, user: { id: user.id, email, name, role }, workspace: { id: workspace.id, name: workspace.name } };
-  });
-
-  app.post('/login', async (req, reply) => {
-    const { email, password } = req.body || {};
-    const user = await app.prisma.user.findUnique({
-      where: { email }, include: { workspace: true },
+    // Añadir al equipo "General" si existe, o crearlo
+    let general = await app.prisma.team.findFirst({
+      where: { workspaceId, name: 'General' },
     });
-    if (!user || !await bcrypt.compare(password, user.passwordHash))
-      return reply.code(401).send({ error: 'invalid_credentials' });
+    if (!general) {
+      general = await app.prisma.team.create({
+        data: { workspaceId, name: 'General', color: '#3b82f6' },
+      });
+    }
+    await app.prisma.teamMember.upsert({
+      where: { teamId_userId: { teamId: general.id, userId: user.id } },
+      update: {},
+      create: { teamId: general.id, userId: user.id },
+    });
 
-    const token = app.jwt.sign({ id: user.id, workspaceId: user.workspaceId, role: user.role });
+    const token = app.jwt.sign({ id: user.id, workspaceId, role: user.role });
     return {
       token,
-      user: { id: user.id, email: user.email, name: user.name, role: user.role },
-      workspace: { id: user.workspace.id, name: user.workspace.name },
+      user: { id: user.id, email, name, role: user.role, workspaceId },
     };
-  });
-
-  app.post('/push-token', { onRequest: [app.authenticate] }, async (req) => {
-    await app.prisma.user.update({
-      where: { id: req.user.id }, data: { pushToken: req.body.token },
-    });
-    return { ok: true };
   });
 }

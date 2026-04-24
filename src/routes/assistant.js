@@ -3,43 +3,30 @@ import Anthropic from '@anthropic-ai/sdk';
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const MODEL = 'claude-haiku-4-5-20251001';
 
-const SYSTEM_PROMPT = `Eres un asistente de productividad para un equipo de trabajo. Hablas español.
+const SYSTEM_PROMPT = `Eres un asistente de productividad. Hablas español.
 
-IMPORTANTE: NO crees tareas automáticamente. Si parece una tarea, PROPÓN los detalles. El usuario usará un botón para confirmar.
+IMPORTANTE: NO crees tareas automáticamente. Si parece tarea, PROPÓN los detalles. El usuario confirmará con botón.
 
-Responde SOLO con JSON puro (sin markdown, sin backticks).
+Responde SOLO JSON puro (sin markdown, sin backticks).
 
-Si describe una tarea, responde:
+Si es tarea:
 {
   "action": "propose_task",
   "task": {
-    "title": "título",
-    "description": "descripción",
+    "title": "...", "description": "...",
     "priority": "low" | "medium" | "high",
     "dueDate": "ISO 8601 o null",
-    "tags": ["etiquetas"],
-    "assigneeName": "nombre o null",
+    "tags": ["..."], "assigneeName": "nombre o null",
     "visibility": "private" | "team" | "public"
   },
-  "reply": "He preparado esta tarea:\\n\\n📌 **Título:** ...\\n📝 **Descripción:** ...\\n⏰ **Fecha:** ...\\n🔴 **Prioridad:** ..."
+  "reply": "He preparado:\\n📌 **Título:** ...\\n📝 ...\\n⏰ ...\\n🔴 ..."
 }
 
-NOTA: La visibilidad por defecto es "private". Solo usa "team" o "public" si el usuario lo indica explícitamente ("tarea de equipo", "tarea para todos", etc.).
+Visibilidad por defecto "private". Solo usa "team"/"public" si el usuario lo indica.
 
-Si NO es tarea (saludo, pregunta):
-{
-  "action": "chat",
-  "reply": "respuesta amable"
-}
+Si NO es tarea: {"action": "chat", "reply": "..."}
 
-Reglas:
-- "urgente/ya/asap" → high
-- "cuando puedas/sin prisa" → low
-- "mañana" → mañana 09:00
-- "esta tarde" → hoy 17:00
-- "el lunes" → próximo lunes 09:00
-
-NUNCA escribas texto fuera del JSON.`;
+Reglas: urgente→high, sin prisa→low, mañana→mañana 09:00, lunes→próximo lunes 09:00.`;
 
 function safeParse(raw) {
   const clean = raw.trim().replace(/^```json\s*/i, '').replace(/```\s*$/, '').trim();
@@ -69,19 +56,15 @@ export default async function assistantRoutes(app) {
       where: { workspaceId: req.user.workspaceId }, select: { id: true, name: true },
     });
     const me = members.find(m => m.id === req.user.id);
-
     const recent = await app.prisma.chatMessage.findMany({
       where: { userId: req.user.id }, orderBy: { createdAt: 'desc' }, take: 6,
     });
     const history = recent.reverse().map(m => ({
-      role: m.role === 'user' ? 'user' : 'assistant',
-      content: m.content,
+      role: m.role === 'user' ? 'user' : 'assistant', content: m.content,
     }));
-
-    const contextMsg = `Fecha actual: ${new Date().toISOString()}
-Hablo con: ${me?.name || 'Usuario'}
-Miembros del equipo: ${members.map(m => m.name).join(', ')}
-
+    const contextMsg = `Fecha: ${new Date().toISOString()}
+Usuario: ${me?.name}
+Equipo: ${members.map(m => m.name).join(', ')}
 Mensaje: "${text}"`;
     if (history.length > 0) history[history.length - 1].content = contextMsg;
 
@@ -93,7 +76,7 @@ Mensaje: "${text}"`;
       });
       parsed = safeParse(resp.content[0].text);
     } catch (e) {
-      app.log.error({ err: e }, 'assistant parse error');
+      app.log.error({ err: e }, 'assistant error');
       const fb = { action: 'chat', reply: 'No pude procesar. Comprueba el saldo o reformula.' };
       await app.prisma.chatMessage.create({ data: { userId: req.user.id, role: 'assistant', content: fb.reply } });
       return fb;
@@ -101,11 +84,7 @@ Mensaje: "${text}"`;
 
     const metadata = parsed.action === 'propose_task' ? { proposedTask: parsed.task } : null;
     await app.prisma.chatMessage.create({
-      data: {
-        userId: req.user.id, role: 'assistant',
-        content: parsed.reply || '✅ Hecho',
-        metadata,
-      },
+      data: { userId: req.user.id, role: 'assistant', content: parsed.reply || '✅ Hecho', metadata },
     });
     return parsed;
   });
@@ -113,9 +92,7 @@ Mensaje: "${text}"`;
   app.post('/create-task', async (req) => {
     const { task } = req.body || {};
     if (!task?.title) return { error: 'title_required' };
-
     const vis = ['private', 'team', 'public'].includes(task.visibility) ? task.visibility : 'private';
-
     const members = await app.prisma.user.findMany({
       where: { workspaceId: req.user.workspaceId }, select: { id: true, name: true },
     });
@@ -124,14 +101,10 @@ Mensaje: "${text}"`;
       const found = members.find(m => m.name.toLowerCase().includes(task.assigneeName.toLowerCase()));
       if (found) assigneeId = found.id;
     }
-
     const created = await app.prisma.task.create({
       data: {
-        workspaceId: req.user.workspaceId,
-        creatorId: req.user.id,
-        assigneeId,
-        title: task.title,
-        description: task.description || null,
+        workspaceId: req.user.workspaceId, creatorId: req.user.id, assigneeId,
+        title: task.title, description: task.description || null,
         priority: ['low', 'medium', 'high'].includes(task.priority) ? task.priority : 'medium',
         dueDate: task.dueDate ? new Date(task.dueDate) : null,
         tags: Array.isArray(task.tags) ? task.tags : [],
@@ -181,23 +154,25 @@ Mensaje: "${text}"`;
       retrasadas: overdueAll.length, por_persona: byPerson,
     };
 
-    const prompt = `Genera informe semanal en español, conciso (max 350 palabras), markdown.
+    const prompt = `Informe semanal español, max 350 palabras, markdown.
 Datos: ${JSON.stringify(summary, null, 2)}
-Estructura:
 # 📊 Informe Semanal — ${summary.semana_del} a ${summary.al}
 ## 📈 Resumen general
-## 👥 Rendimiento por persona
-## ⚠️ Puntos de atención
+## 👥 Por persona
+## ⚠️ Atención
 ## 🎯 Recomendaciones
-## 💡 Frase motivadora
-Solo markdown, sin bloques de código.`;
+## 💡 Motivación
+Solo markdown.`;
 
     try {
       const resp = await client.messages.create({ model: MODEL, max_tokens: 1200, messages: [{ role: 'user', content: prompt }] });
-      return { report: resp.content[0].text, period: { from: summary.semana_del, to: summary.al },
-        stats: { created: createdWeek, completed: completedWeek.length, pending: pendingAll.length, overdue: overdueAll.length } };
+      return {
+        report: resp.content[0].text,
+        period: { from: summary.semana_del, to: summary.al },
+        stats: { created: createdWeek, completed: completedWeek.length, pending: pendingAll.length, overdue: overdueAll.length },
+      };
     } catch (e) {
-      app.log.error({ err: e }, 'weekly report error');
+      app.log.error({ err: e }, 'report error');
       return reply.code(500).send({ error: 'ai_error', message: e.message });
     }
   });

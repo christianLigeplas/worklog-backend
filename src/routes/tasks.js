@@ -76,12 +76,10 @@ export default async function taskRoutes(app) {
     } = req.body || {};
 
     const vis = ['private', 'team', 'public'].includes(visibility) ? visibility : 'private';
-    // Privada: el asignado siempre es el creador
     let finalAssigneeId = vis === 'private' ? req.user.id : (assigneeId || req.user.id);
     let finalAssigneeIds = vis === 'private' ? [] : (Array.isArray(assigneeIds) ? assigneeIds.filter(Boolean) : []);
     let finalTeamId = vis === 'private' ? null : (teamId || null);
 
-    // Validar
     const check = await validateAssignment(app.prisma, {
       visibility: vis, teamId: finalTeamId, creatorId: req.user.id,
       assigneeId: finalAssigneeId, assigneeIds: finalAssigneeIds,
@@ -113,7 +111,6 @@ export default async function taskRoutes(app) {
       const remindAt = new Date(task.dueDate.getTime() - 60 * 60 * 1000);
       if (remindAt > new Date()) await app.prisma.reminder.create({ data: { taskId: task.id, remindAt } });
     }
-    // Notificar a los asignados (excepto al creador)
     const toNotify = new Set([finalAssigneeId, ...finalAssigneeIds].filter(x => x && x !== req.user.id));
     for (const uid of toNotify) {
       await app.prisma.notification.create({
@@ -140,14 +137,12 @@ export default async function taskRoutes(app) {
 
     const data = { ...req.body };
     const newVisibility = data.visibility && ['private', 'team', 'public'].includes(data.visibility) ? data.visibility : t.visibility;
-    // Solo creador u owner pueden cambiar visibilidad
     if (data.visibility && t.creatorId !== userId && req.user.role !== 'owner') delete data.visibility;
 
     if (data.dueDate) data.dueDate = new Date(data.dueDate);
     if (data.startDate) data.startDate = new Date(data.startDate);
     if (data.status === 'done' && t.status !== 'done') data.completedAt = new Date();
 
-    // Si pasa a privada, eliminar asignados múltiples y forzar assigneeId = creator
     if (newVisibility === 'private' && t.visibility !== 'private') {
       await app.prisma.taskAssignee.deleteMany({ where: { taskId: t.id } });
       data.assigneeId = t.creatorId;
@@ -157,7 +152,6 @@ export default async function taskRoutes(app) {
     const assigneeIds = Array.isArray(data.assigneeIds) ? data.assigneeIds.filter(Boolean) : null;
     delete data.assigneeIds;
 
-    // Validar asignación si aplica
     if (newVisibility !== 'private' && (data.assigneeId !== undefined || assigneeIds || data.teamId !== undefined)) {
       const check = await validateAssignment(app.prisma, {
         visibility: newVisibility,
@@ -181,7 +175,6 @@ export default async function taskRoutes(app) {
       }
     }
 
-    // Notificar cambio de asignado principal
     if (data.assigneeId && data.assigneeId !== t.assigneeId && data.assigneeId !== userId) {
       await app.prisma.notification.create({
         data: { userId: data.assigneeId, taskId: t.id, title: '👤 Te han asignado una tarea', body: updated.title },

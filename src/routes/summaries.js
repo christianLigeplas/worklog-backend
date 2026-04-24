@@ -24,64 +24,29 @@ export default async function summaryRoutes(app) {
     };
 
     const [myTasks, dueToday, overdue, highPriority, completedToday] = await Promise.all([
-      // Mis tareas: asignadas a mí (principal o múltiple) y no completadas
       app.prisma.task.findMany({
-        where: {
-          AND: [
-            ...baseAnd,
-            {
-              OR: [
-                { assigneeId: userId },
-                { assignees: { some: { userId } } },
-              ],
-            },
-            { status: { not: 'done' } },
-          ],
-        },
-        orderBy: [{ priority: 'desc' }, { dueDate: 'asc' }],
-        include, take: 20,
+        where: { AND: [...baseAnd,
+          { OR: [{ assigneeId: userId }, { assignees: { some: { userId } } }] },
+          { status: { not: 'done' } }] },
+        orderBy: [{ priority: 'desc' }, { dueDate: 'asc' }], include, take: 20,
       }),
       app.prisma.task.findMany({
-        where: {
-          AND: [
-            ...baseAnd,
-            { status: { not: 'done' } },
-            { dueDate: { gte: startOfDay, lte: endOfDay } },
-          ],
-        },
-        orderBy: { dueDate: 'asc' },
-        include, take: 20,
+        where: { AND: [...baseAnd, { status: { not: 'done' } },
+          { dueDate: { gte: startOfDay, lte: endOfDay } }] },
+        orderBy: { dueDate: 'asc' }, include, take: 20,
       }),
       app.prisma.task.findMany({
-        where: {
-          AND: [
-            ...baseAnd,
-            { status: { not: 'done' } },
-            { dueDate: { lt: startOfDay } },
-          ],
-        },
-        orderBy: { dueDate: 'asc' },
-        include, take: 20,
+        where: { AND: [...baseAnd, { status: { not: 'done' } },
+          { dueDate: { lt: startOfDay } }] },
+        orderBy: { dueDate: 'asc' }, include, take: 20,
       }),
       app.prisma.task.findMany({
-        where: {
-          AND: [
-            ...baseAnd,
-            { status: { not: 'done' } },
-            { priority: 'high' },
-          ],
-        },
-        orderBy: { dueDate: 'asc' },
-        include, take: 20,
+        where: { AND: [...baseAnd, { status: { not: 'done' } }, { priority: 'high' }] },
+        orderBy: { dueDate: 'asc' }, include, take: 20,
       }),
       app.prisma.task.count({
-        where: {
-          AND: [
-            ...baseAnd,
-            { status: 'done' },
-            { completedAt: { gte: startOfDay, lte: endOfDay } },
-          ],
-        },
+        where: { AND: [...baseAnd, { status: 'done' },
+          { completedAt: { gte: startOfDay, lte: endOfDay } }] },
       }),
     ]);
 
