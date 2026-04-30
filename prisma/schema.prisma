@@ -22,20 +22,20 @@ model Workspace {
 }
 
 model User {
-  id             String             @id @default(uuid())
-  workspaceId    String             @map("workspace_id")
-  email          String             @unique
-  passwordHash   String             @map("password_hash")
-  name           String
-  role           String             @default("member")
-  pushToken      String?            @map("push_token")
-  createdAt      DateTime           @default(now()) @map("created_at")
-  workspace      Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  createdTasks   Task[]             @relation("creator")
-  primaryAssigned Task[]            @relation("primaryAssignee")
-  comments       Comment[]
-  notifications  Notification[]
-  pushSubs       PushSubscription[]
+  id              String             @id @default(uuid())
+  workspaceId     String             @map("workspace_id")
+  email           String             @unique
+  passwordHash    String             @map("password_hash")
+  name            String
+  role            String             @default("member")
+  pushToken       String?            @map("push_token")
+  createdAt       DateTime           @default(now()) @map("created_at")
+  workspace       Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  createdTasks    Task[]             @relation("creator")
+  primaryAssigned Task[]             @relation("primaryAssignee")
+  comments        Comment[]
+  notifications   Notification[]
+  pushSubs        PushSubscription[]
   teamMemberships TeamMember[]
   taskAssignments TaskAssignee[]
 
@@ -81,41 +81,57 @@ model Project {
 }
 
 model Task {
-  id          String       @id @default(uuid())
-  workspaceId String       @map("workspace_id")
-  creatorId   String       @map("creator_id")
-  assigneeId  String?      @map("assignee_id")
-  teamId      String?      @map("team_id")
-  projectId   String?      @map("project_id")
+  id          String         @id @default(uuid())
+  workspaceId String         @map("workspace_id")
+  creatorId   String         @map("creator_id")
+  assigneeId  String?        @map("assignee_id")
+  teamId      String?        @map("team_id")
+  projectId   String?        @map("project_id")
   title       String
   description String?
-  status      String       @default("pending")
-  priority    String       @default("medium")
-  visibility  String       @default("private")
-  dueDate     DateTime?    @map("due_date")
-  startDate   DateTime?    @map("start_date")
-  tags        String[]     @default([])
+  type        String         @default("task")    // task | meeting
+  status      String         @default("pending")
+  priority    String         @default("medium")
+  visibility  String         @default("private")
+  dueDate     DateTime?      @map("due_date")
+  startDate   DateTime?      @map("start_date")  // Para reuniones (hora inicio)
+  tags        String[]       @default([])
   location    Json?
-  archived    Boolean      @default(false)
-  archivedAt  DateTime?    @map("archived_at")
-  createdAt   DateTime     @default(now()) @map("created_at")
-  updatedAt   DateTime     @updatedAt @map("updated_at")
-  completedAt DateTime?    @map("completed_at")
-  workspace   Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  creator     User         @relation("creator", fields: [creatorId], references: [id])
-  assignee    User?        @relation("primaryAssignee", fields: [assigneeId], references: [id])
-  team        Team?        @relation(fields: [teamId], references: [id], onDelete: SetNull)
-  project     Project?     @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  archived    Boolean        @default(false)
+  archivedAt  DateTime?      @map("archived_at")
+  createdAt   DateTime       @default(now()) @map("created_at")
+  updatedAt   DateTime       @updatedAt @map("updated_at")
+  completedAt DateTime?      @map("completed_at")
+  workspace   Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  creator     User           @relation("creator", fields: [creatorId], references: [id])
+  assignee    User?          @relation("primaryAssignee", fields: [assigneeId], references: [id])
+  team        Team?          @relation(fields: [teamId], references: [id], onDelete: SetNull)
+  project     Project?       @relation(fields: [projectId], references: [id], onDelete: SetNull)
   comments    Comment[]
   attachments Attachment[]
   reminders   Reminder[]
   assignees   TaskAssignee[]
+  subtasks    Subtask[]
 
   @@index([workspaceId, status])
   @@index([workspaceId, dueDate])
   @@index([workspaceId, archived])
   @@index([workspaceId, teamId])
+  @@index([workspaceId, type])
   @@map("tasks")
+}
+
+model Subtask {
+  id        String   @id @default(uuid())
+  taskId    String   @map("task_id")
+  text      String
+  done      Boolean  @default(false)
+  position  Int      @default(0)
+  createdAt DateTime @default(now()) @map("created_at")
+  task      Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@index([taskId, position])
+  @@map("subtasks")
 }
 
 model TaskAssignee {
@@ -156,13 +172,13 @@ model Attachment {
 }
 
 model Reminder {
-  id        String   @id @default(uuid())
-  taskId    String   @map("task_id")
-  userId    String?  @map("user_id")
-  message   String?
-  remindAt  DateTime @map("remind_at")
-  sent      Boolean  @default(false)
-  task      Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  id       String   @id @default(uuid())
+  taskId   String   @map("task_id")
+  userId   String?  @map("user_id")
+  message  String?
+  remindAt DateTime @map("remind_at")
+  sent     Boolean  @default(false)
+  task     Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
 
   @@index([remindAt, sent])
   @@map("reminders")
